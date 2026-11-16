@@ -14,7 +14,7 @@ $host = getenv('DB_HOST') ?: 'db';
 $port = getenv('DB_PORT') ?: '5432';
 $db   = getenv('DB_NAME') ?: 'sneaker_db';
 $user = getenv('DB_USER') ?: 'sneaker_user';
-$pass = getenv('DB_PASSWORD') ?: 'sneaker_pass';
+$pass = getenv('DB_PASSWORD') ?: '';
 
 try {
     $dsn = "pgsql:host=$host;port=$port;dbname=$db";

@@ -6,7 +6,12 @@
 
 # Ignorar volcados de copias de seguridad
 backups/*.sql
+backups/*.tar.gz
+backups/*.log
 
 # Certificados y llaves SSL/TLS
 *.key
 *.crt
+
+logs/
+*.log

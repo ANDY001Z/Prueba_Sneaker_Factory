@@ -1,30 +1,30 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Uso: ./scripts/restore.sh <backup.sql> [base_destino]
+# Por defecto restaura en una BD AISLADA (sneaker_restore_test), sin tocar produccion.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[ $# -ge 1 ] || { echo "Uso: $0 <backup.sql> [base_destino]"; exit 1; }
+FILE="$1"
+[ -f "$FILE" ] || { echo "No existe $FILE"; exit 1; }
+set -a; . ./.env; set +a
+TARGET="${2:-sneaker_restore_test}"
 
-# 1. Validar que se pasa el archivo como argumento
-if [ -z "$1" ]; then
-  echo "Uso: ./scripts/restore.sh <ruta_al_archivo_backup.sql>"
-  exit 1
-fi
+psqlx() { docker exec -i -e PGPASSWORD="$DB_PASSWORD" sneaker_db psql -U "$DB_USER" "$@"; }
 
-BACKUP_FILE=$1
-
-if [ ! -f "$BACKUP_FILE" ]; then
-  echo "❌ El archivo $BACKUP_FILE no existe."
-  exit 1
-fi
-
-# 2. Cargar variables del .env si existe
-if [ -f .env ]; then
-  export $(cat .env | grep -v '^#' | xargs)
-fi
-
-echo "Restaurando la base de datos desde $BACKUP_FILE..."
-
-# 3. Inyectar el SQL de vuelta al contenedor de PostgreSQL
-cat $BACKUP_FILE | docker exec -i sneaker_db psql -U ${DB_USER:-postgres} -d ${DB_NAME:-sneaker_db}
-
-if [ $? -eq 0 ]; then
-  echo "✅ Base de datos restaurada correctamente."
+if [ "$TARGET" = "$DB_NAME" ]; then
+  echo "ATENCION: vas a SOBRESCRIBIR la base de PRODUCCION ($DB_NAME)."
+  read -r -p "Escribe RESTAURAR para continuar: " ans
+  [ "$ans" = "RESTAURAR" ] || { echo "Cancelado."; exit 1; }
+  echo "[INFO] Backup de seguridad previo..."
+  ./scripts/backup.sh
+  psqlx -d "$TARGET" -v ON_ERROR_STOP=1 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 else
-  echo "❌ Error durante la restauración."
+  echo "[INFO] Preparando base aislada '$TARGET'..."
+  psqlx -d "$DB_NAME" -c "DROP DATABASE IF EXISTS \"$TARGET\";"
+  psqlx -d "$DB_NAME" -c "CREATE DATABASE \"$TARGET\";"
 fi
+
+echo "[INFO] Restaurando $FILE en '$TARGET'..."
+psqlx -d "$TARGET" -v ON_ERROR_STOP=1 < "$FILE" >/dev/null
+echo "[OK] Restauracion completada en '$TARGET'."
+echo "Comprueba: docker exec -e PGPASSWORD=\$DB_PASSWORD sneaker_db psql -U $DB_USER -d $TARGET -c 'SELECT * FROM orders;'"

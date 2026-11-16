@@ -2,15 +2,15 @@
 
 // Autoloader básico
 spl_autoload_register(function ($class) {
-    // Convierte el namespace (ej. Config\Database) en ruta de archivo (ej. ./Config/Database.php)
-    $path = __DIR__ . '/' . str_replace('\\', '/', $class) . '.php';
+    // Convierte el namespace (ej. Config\Database) en ruta de archivo (ej. ../Config/Database.php)
+    $path = __DIR__ . '/../' . str_replace('\\', '/', $class) . '.php';
     
     if (file_exists($path)) {
         require_once $path;
     }
 });
 
-use Config\Database;
+use config\Database;
 
 // 1. Configuración de Cabeceras Globales (API REST)
 header("Access-Control-Allow-Origin: *");

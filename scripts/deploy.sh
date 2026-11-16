@@ -1,60 +1,76 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Despliegue reproducible de Sneaker Factory. NO borra volumenes (los datos se conservan).
+set -euo pipefail
+cd "$(dirname "$0")/.."
 
 echo "=================================================="
-echo "  Despliegue Automático - Sneaker Factory (DAW)   "
+echo "  Despliegue - Sneaker Factory (DAW)"
 echo "=================================================="
 
-# 1. Comprobar que Docker está instalado
-if ! command -v docker &> /dev/null; then
-    echo "[ERROR] Docker no está instalado en este sistema."
-    exit 1
-fi
+# 1. Prerrequisitos
+for cmd in docker openssl curl; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "[ERROR] Falta '$cmd'."; exit 1; }
+done
+docker compose version >/dev/null 2>&1 || { echo "[ERROR] Falta el plugin 'docker compose'."; exit 1; }
+docker info >/dev/null 2>&1 || { echo "[ERROR] El demonio de Docker no responde (permisos o servicio parado)."; exit 1; }
 
-# 2. Generar el archivo .env a partir de la plantilla si no existe
+# 2. .env desde la plantilla si no existe
 if [ ! -f .env ]; then
-    echo "[INFO] No se encontró el archivo .env real."
-    echo "[INFO] Generando .env automáticamente desde .env.example..."
-    cp .env.example .env
-    # Reemplaza cualquier contraseña por defecto en DB_PASSWORD por la contraseña de laboratorio
-    sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=sneaker_pass/' .env
+  echo "[INFO] Creando .env desde .env.example..."
+  cp .env.example .env
+  sed -i 's/^DB_PASSWORD=.*/DB_PASSWORD=sneaker_pass/' .env   # credencial de laboratorio (no secreta)
 fi
 
-# 3. Generar certificados SSL/TLS autofirmados; no se suben al repositorio por seguridad de modo que se ejecutaran al inicializar el script.
-mkdir -p nginx/certs
+# 3. Carpetas de trabajo
+mkdir -p nginx/certs logs/nginx backups
+
+# 4. Puertos libres (solo si la pila aun no esta levantada)
+if [ -z "$(docker compose ps -q 2>/dev/null)" ] && command -v ss >/dev/null 2>&1; then
+  for p in 8081 8443; do
+    if ss -ltn | grep -q ":$p "; then echo "[ERROR] El puerto $p ya esta en uso."; exit 1; fi
+  done
+fi
+
+# 5. Certificado de prueba (con SAN). No se sube al repositorio.
 if [ ! -f nginx/certs/server.crt ] || [ ! -f nginx/certs/server.key ]; then
-    echo "[INFO] No se encontraron certificados SSL."
-    echo "[INFO] Generando certificados SSL/TLS autofirmados..."
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-      -keyout nginx/certs/server.key \
-      -out nginx/certs/server.crt \
-      -subj "//CN=localhost"
+  echo "[INFO] Generando certificado TLS de prueba..."
+  MSYS_NO_PATHCONV=1 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout nginx/certs/server.key -out nginx/certs/server.crt \
+    -subj "/CN=sneaker.local" \
+    -addext "subjectAltName=DNS:sneaker.local,DNS:localhost,IP:127.0.0.1"
+  chmod 600 nginx/certs/server.key || true
 fi
 
-# 4. Reconstruir y levantar la pila de contenedores
-echo "[INFO] Reconstruyendo y levantando servicios en segundo plano..."
-docker compose down -v
+# 6. Construir y levantar (sin 'down -v')
+echo "[INFO] Construyendo y levantando servicios..."
 docker compose up -d --build
 
-# 5. Esperar a la estabilización del entorno
-echo "[INFO] Esperando 5 segundos para verificar el estado de los servicios..."
-sleep 5
+# 7. Esperar a que los 3 servicios esten healthy (maximo ~2 min)
+wait_healthy() {
+  local n="$1" s
+  for _ in $(seq 1 40); do
+    s=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$n" 2>/dev/null || echo missing)
+    [ "$s" = "healthy" ] && { echo "[OK] $n healthy"; return 0; }
+    sleep 3
+  done
+  echo "[ERROR] $n no llego a healthy. Revisa: docker compose logs $n"; return 1
+}
+wait_healthy sneaker_db
+wait_healthy sneaker_backend
+wait_healthy sneaker_web
 
-# 6. Ejecutar la copia de seguridad inicial de comprobación
-if [ -f ./scripts/backup.sh ]; then
-    echo "[INFO] Generando copia de seguridad inicial de comprobación..."
-    chmod +x ./scripts/backup.sh
-    ./scripts/backup.sh
-fi
-
-# 7. Mostrar el estado final de los contenedores
-echo "[INFO] Estado actual de la infraestructura:"
+# 8. Verificacion
+echo "[INFO] Estado:"
 docker compose ps
+echo "[INFO] Comprobaciones:"
+./scripts/check.sh
+echo "[INFO] Generando backup..."
+./scripts/backup.sh
 
 echo "=================================================="
-echo " [ÉXITO] Despliegue completado y operativo."
-echo " Acceso HTTP (Redirige 301): http://localhost:8081"
-echo " Acceso HTTPS Seguro:       https://localhost:8443"
-echo " Healthcheck API:           http://localhost:8081/health.php"
-echo " Copias de seguridad:       ./backups/"
+echo " [EXITO] Despliegue completado."
+echo " HTTPS:       https://localhost:8443  (o https://sneaker.local:8443 con entrada en hosts)"
+echo " HTTP (301):  http://localhost:8081"
+echo " Healthcheck: https://localhost:8443/health.php"
+echo " Backups:     ./backups/   Logs Nginx: ./logs/nginx/"
 echo "=================================================="
